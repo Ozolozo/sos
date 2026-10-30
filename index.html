@@ -361,6 +361,7 @@ function lireFormulaire(form) {
 const MSG_ERREUR = {
   codeClub: 'Code club incorrect.', cle: 'Lien personnel invalide.', champs: 'Champs manquants ou invalides.',
   serveur: 'Erreur du serveur.', reseau: 'Erreur réseau, réessayez.',
+  inconnu: 'Aucune fiche n’est enregistrée avec cette adresse e-mail. Vérifiez l’orthographe ou créez votre fiche.',
   action: 'Fonction non disponible sur le serveur : la version déployée du script Apps Script n’est pas à jour.'
 };
 
@@ -556,8 +557,10 @@ function vueRetrouver() {
     try {
       const r = await apiPost({ action: 'retrouver', email: fr.elements.email.value.trim() });
       if (!r.ok) throw new Error(r.detail || MSG_ERREUR[r.erreur] || r.erreur);
-      st.innerHTML = '<div class="msg ok">Si une fiche est associée à cette adresse, un e-mail contenant votre lien personnel ' +
-        'vient d’être envoyé. Pensez à vérifier vos spams.</div>';
+      st.innerHTML = r.dejaEnvoye
+        ? '<div class="msg info">Votre lien vous a déjà été envoyé il y a moins de 5 minutes. Vérifiez votre boîte de réception et vos spams.</div>'
+        : '<div class="msg ok">E-mail envoyé ✔ Votre lien personnel vient d’être envoyé à cette adresse. Pensez à vérifier vos spams.</div>';
+      bt.disabled = false;
     } catch (e) {
       st.innerHTML = '<div class="msg ko">' + esc(e.message === 'Failed to fetch' ? MSG_ERREUR.reseau : e.message) + '</div>';
       bt.disabled = false;

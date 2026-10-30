@@ -215,13 +215,10 @@ function alerte_(b) {
   return { ok: true, envoyes: dest.length };
 }
 
-// Renvoie le(s) lien(s) personnel(s) à l'adresse enregistrée. La réponse est
-// identique que l'adresse existe ou non : impossible de savoir qui est inscrit.
+// Renvoie le(s) lien(s) personnel(s) à l'adresse enregistrée dans la fiche.
 function retrouver_(email) {
   const mail = String(email || '').trim().toLowerCase();
-  const reponse = { ok: true };
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return { ok: false, erreur: 'champs', detail: 'Adresse e-mail invalide.' };
-  if (limite_('retrouver_' + mail, CFG.DELAI_RETROUVER_MIN)) return reponse;
 
   const url = PropertiesService.getScriptProperties().getProperty('URL_SITE') || '';
   const d = lireFiches_();
@@ -234,16 +231,21 @@ function retrouver_(email) {
       });
     }
   }
-  if (liens.length && url) {
-    envoyer_(mail, 'Votre lien personnel – fiche d’urgence SOS',
-      '<p>Bonjour,</p><p>Voici le lien personnel pour modifier votre fiche d’urgence (ne le partagez pas) :</p>' +
-      liens.map(function (l) {
-        return '<p><b>' + esc_(l.nom) + '</b><br><a href="' + l.lien + '">' + l.lien + '</a></p>';
-      }).join('') +
-      '<p>Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail.</p>');
+  if (!liens.length) {
+    journal_('retrouver', '', 'adresse inconnue', '');
+    return { ok: false, erreur: 'inconnu' };
   }
+  if (!url) return { ok: false, erreur: 'serveur', detail: 'Propriété URL_SITE non renseignée dans le script.' };
+  if (limite_('retrouver_' + mail, CFG.DELAI_RETROUVER_MIN)) return { ok: true, dejaEnvoye: true };
+
+  envoyer_(mail, 'Votre lien personnel – fiche d’urgence SOS',
+    '<p>Bonjour,</p><p>Voici le lien personnel pour modifier votre fiche d’urgence (ne le partagez pas) :</p>' +
+    liens.map(function (l) {
+      return '<p><b>' + esc_(l.nom) + '</b><br><a href="' + l.lien + '">' + l.lien + '</a></p>';
+    }).join('') +
+    '<p>Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail.</p>');
   journal_('retrouver', '', liens.length + ' fiche(s)', '');
-  return reponse;
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------------ */
