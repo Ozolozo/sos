@@ -9,6 +9,8 @@
  *        Qui a accès : Tout le monde
  */
 
+const VERSION = '2026-10-30-v3';
+
 const CFG = {
   ONGLET_FICHES: 'Fiches',
   ONGLET_JOURNAL: 'Journal',
@@ -80,7 +82,7 @@ function doGet(e) {
   try {
     const p = (e && e.parameter) || {};
     if (p.action === 'fiche') return json_(fichePublique_(p.id));
-    return json_({ ok: true, service: 'sos-qr' });
+    return json_({ ok: true, service: 'sos-qr', version: VERSION });
   } catch (err) {
     return json_({ ok: false, erreur: 'serveur', detail: String(err) });
   }
