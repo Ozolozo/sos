@@ -15,6 +15,7 @@ const CFG = {
   NOM_EXPEDITEUR: 'SOS Club',
   DELAI_NOTIF_SCAN_MIN: 15, // 1 e-mail "fiche consultée" max par période
   DELAI_ALERTE_MIN: 5,      // 1 alerte e-mail aux proches max par période
+  DELAI_RETROUVER_MIN: 5,   // 1 renvoi du lien personnel max par adresse et par période
   LONGUEUR_MAX: 600
 };
 
@@ -93,6 +94,7 @@ function doPost(e) {
       case 'enregistrer': return json_(enregistrer_(b));
       case 'nouveauQR':   return json_(nouveauQR_(b.k));
       case 'alerte':      return json_(alerte_(b));
+      case 'retrouver':   return json_(retrouver_(b.email));
       default:            return json_({ ok: false, erreur: 'action' });
     }
   } catch (err) {
@@ -213,6 +215,37 @@ function alerte_(b) {
   return { ok: true, envoyes: dest.length };
 }
 
+// Renvoie le(s) lien(s) personnel(s) à l'adresse enregistrée. La réponse est
+// identique que l'adresse existe ou non : impossible de savoir qui est inscrit.
+function retrouver_(email) {
+  const mail = String(email || '').trim().toLowerCase();
+  const reponse = { ok: true };
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(mail)) return { ok: false, erreur: 'champs', detail: 'Adresse e-mail invalide.' };
+  if (limite_('retrouver_' + mail, CFG.DELAI_RETROUVER_MIN)) return reponse;
+
+  const url = PropertiesService.getScriptProperties().getProperty('URL_SITE') || '';
+  const d = lireFiches_();
+  const liens = [];
+  for (let r = 1; r < d.values.length; r++) {
+    if (String(d.values[r][d.idx.emailMembre]).trim().toLowerCase() === mail) {
+      liens.push({
+        nom: String(d.values[r][d.idx.prenom]) + ' ' + String(d.values[r][d.idx.nom]),
+        lien: url + '?k=' + String(d.values[r][d.idx.cleEdition])
+      });
+    }
+  }
+  if (liens.length && url) {
+    envoyer_(mail, 'Votre lien personnel – fiche d’urgence SOS',
+      '<p>Bonjour,</p><p>Voici le lien personnel pour modifier votre fiche d’urgence (ne le partagez pas) :</p>' +
+      liens.map(function (l) {
+        return '<p><b>' + esc_(l.nom) + '</b><br><a href="' + l.lien + '">' + l.lien + '</a></p>';
+      }).join('') +
+      '<p>Si vous n’êtes pas à l’origine de cette demande, ignorez cet e-mail.</p>');
+  }
+  journal_('retrouver', '', liens.length + ' fiche(s)', '');
+  return reponse;
+}
+
 /* ------------------------------------------------------------------ */
 /* Accès au Google Sheet                                               */
 /* ------------------------------------------------------------------ */
@@ -279,6 +312,7 @@ function nettoyer_(src) {
 function valider_(f) {
   if (!f.prenom || !f.nom) return 'Le prénom et le nom sont obligatoires.';
   if (!f.contact1Tel) return 'Le téléphone du contact d’urgence n°1 est obligatoire.';
+  if (!f.emailMembre) return 'Votre adresse e-mail est obligatoire (elle permet de retrouver votre lien personnel).';
   const reMail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const mails = ['contact1Email', 'contact2Email', 'emailMembre'];
   for (let i = 0; i < mails.length; i++) {

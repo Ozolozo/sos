@@ -309,6 +309,7 @@ const SCHEMA = [
   { s: 'Identité' },
   { k: 'prenom', l: 'Prénom', req: 1 },
   { k: 'nom', l: 'Nom', req: 1 },
+  { k: 'emailMembre', l: 'Mon e-mail (non affiché, permet de retrouver mon lien personnel)', t: 'email', req: 1 },
   { k: 'dateNaissance', l: 'Date de naissance', t: 'date' },
   { k: 'langues', l: 'Langues parlées', ph: 'Ex. français, anglais' },
   { s: 'Informations médicales' },
@@ -328,7 +329,6 @@ const SCHEMA = [
   { k: 'contact2Tel', l: 'Téléphone', t: 'tel', ph: '+33 6 12 34 56 78' },
   { k: 'contact2Email', l: 'E-mail (non affiché, reçoit les alertes)', t: 'email' },
   { s: 'Mes notifications' },
-  { k: 'emailMembre', l: 'Mon e-mail (non affiché)', t: 'email' },
   { k: 'notifierScan', l: 'Me prévenir par e-mail quand ma fiche est consultée', t: 'cb' }
 ];
 
@@ -371,7 +371,8 @@ function vueCreation() {
     '<form id="fm" novalidate><section class="card"><h2>Club</h2><label class="f">Code club <span class="req">*</span>' +
     '<input type="text" name="codeClub" required autocomplete="off" value="' + esc(params.get('club') || '') + '"></label></section>' +
     formulaire({ notifierScan: 'OUI' }) +
-    '<div id="st"></div><button class="btn" type="submit">Créer ma fiche</button></form>';
+    '<div id="st"></div><button class="btn" type="submit">Créer ma fiche</button></form>' +
+    '<p class="small" style="text-align:center">Vous avez déjà une fiche ? <a href="?retrouver">Recevoir mon lien personnel</a></p>';
   const fm = document.getElementById('fm');
   fm.onsubmit = async ev => {
     ev.preventDefault();
@@ -398,7 +399,9 @@ async function vueEdition(k) {
     if (!r.ok) throw new Error(MSG_ERREUR[r.erreur] || r.erreur);
     fiche = r.fiche;
   } catch (e) {
-    $app.innerHTML = '<div class="msg ko">' + esc(e.message === 'Failed to fetch' ? MSG_ERREUR.reseau : e.message) + '</div>';
+    $app.innerHTML = '<div class="msg ko">' + esc(e.message === 'Failed to fetch' ? MSG_ERREUR.reseau : e.message) + '</div>' +
+      '<a class="btn sec" href="?retrouver">Recevoir mon lien personnel par e-mail</a>';
+    if (stockage('sos_k') === k) stockage('sos_k', null);
     return;
   }
   stockage('sos_k', k);
@@ -529,7 +532,36 @@ function vueAccueil() {
     '<section class="card"><p>Un QR code sur votre casque, votre vélo ou dans votre portefeuille : en cas d’accident, ' +
     'toute personne sur place accède à vos informations vitales et peut prévenir vos proches, sans application.</p>' +
     (k ? '<a class="btn" href="?k=' + encodeURIComponent(k) + '">Modifier ma fiche</a><div style="height:8px"></div>' : '') +
-    '<a class="btn ' + (k ? 'sec' : '') + '" href="?new">Créer ma fiche</a></section>';
+    '<a class="btn ' + (k ? 'sec' : '') + '" href="?new">Créer ma fiche</a><div style="height:8px"></div>' +
+    (k ? '' : '<a class="btn sec" href="?retrouver">J’ai déjà une fiche</a>') + '</section>';
+}
+
+/* =============== VUE 4 : RETROUVER SON LIEN PERSONNEL =============== */
+function vueRetrouver() {
+  $app.innerHTML =
+    '<h1>J’ai déjà une fiche</h1>' +
+    '<section class="card"><p>Saisissez l’adresse e-mail indiquée dans votre fiche : vous recevrez votre lien personnel ' +
+    'pour la modifier et imprimer vos QR codes.</p>' +
+    '<form id="fr" novalidate><label class="f">Mon e-mail <span class="req">*</span>' +
+    '<input type="email" name="email" required autocomplete="email"></label>' +
+    '<div id="st"></div><button class="btn" type="submit" style="margin-top:12px">Recevoir mon lien</button></form></section>' +
+    '<p class="small"><a href="./">← Retour</a></p>';
+  const fr = document.getElementById('fr');
+  fr.onsubmit = async ev => {
+    ev.preventDefault();
+    if (!fr.reportValidity()) return;
+    const st = document.getElementById('st'), bt = fr.querySelector('button');
+    bt.disabled = true; st.innerHTML = '<div class="msg info">Envoi…</div>';
+    try {
+      const r = await apiPost({ action: 'retrouver', email: fr.elements.email.value.trim() });
+      if (!r.ok) throw new Error(r.detail || MSG_ERREUR[r.erreur] || r.erreur);
+      st.innerHTML = '<div class="msg ok">Si une fiche est associée à cette adresse, un e-mail contenant votre lien personnel ' +
+        'vient d’être envoyé. Pensez à vérifier vos spams.</div>';
+    } catch (e) {
+      st.innerHTML = '<div class="msg ko">' + esc(e.message === 'Failed to fetch' ? MSG_ERREUR.reseau : e.message) + '</div>';
+      bt.disabled = false;
+    }
+  };
 }
 
 /* ============================ ROUTEUR ============================ */
@@ -542,6 +574,7 @@ function vueAccueil() {
   if (params.get('id')) return vueUrgence(params.get('id'));
   if (params.get('k')) return vueEdition(params.get('k'));
   if (params.has('new')) return vueCreation();
+  if (params.has('retrouver')) return vueRetrouver();
   vueAccueil();
 })();
 </script>
