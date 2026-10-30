@@ -177,8 +177,9 @@ const T = {
     ne: 'Né(e) le', ans: 'ans', groupe: 'Groupe sanguin', allergies: 'Allergies', traitements: 'Traitements en cours',
     antecedents: 'Antécédents', infos: 'Informations utiles', langues: 'Langues parlées', nr: 'Non renseigné',
     medical: 'Informations médicales', contacts: "Contacts d'urgence", appeler: 'Appeler', sms: 'SMS',
-    prevenir: '📍 Prévenir les proches avec ma position', posEnCours: 'Localisation en cours…',
-    posOk: 'Position obtenue : elle est incluse dans les SMS ci-dessus.', posKo: 'Position indisponible : les SMS partent sans position.',
+    posEnCours: 'Localisation en cours… le SMS va s’ouvrir.',
+    posOk: 'Position incluse dans le SMS ✔', posKo: 'Position indisponible : le SMS part sans position.',
+    relance: 'Si le SMS ne s’est pas ouvert, appuyez de nouveau sur « SMS ».',
     mails: n => n > 0 ? n + ' proche(s) prévenu(s) par e-mail.' : '', deja: 'Une alerte e-mail a déjà été envoyée il y a quelques minutes.',
     gestesT: 'Premiers gestes',
     gestes: ["Appelez le 112 (ou le 15 en France).",
@@ -191,8 +192,9 @@ const T = {
     ne: 'Born on', ans: 'years old', groupe: 'Blood type', allergies: 'Allergies', traitements: 'Current medication',
     antecedents: 'Medical history', infos: 'Useful information', langues: 'Languages spoken', nr: 'Not provided',
     medical: 'Medical information', contacts: 'Emergency contacts', appeler: 'Call', sms: 'Text',
-    prevenir: '📍 Alert relatives with my location', posEnCours: 'Getting location…',
-    posOk: 'Location obtained: it is included in the text messages above.', posKo: 'Location unavailable: texts will be sent without it.',
+    posEnCours: 'Getting location… the text message will open.',
+    posOk: 'Location included in the text message ✔', posKo: 'Location unavailable: the text will be sent without it.',
+    relance: 'If the text message did not open, tap “Text” again.',
     mails: n => n > 0 ? n + ' relative(s) alerted by e-mail.' : '', deja: 'An e-mail alert was already sent a few minutes ago.',
     gestesT: 'First aid',
     gestes: ['Call 112 (works across Europe).',
@@ -205,8 +207,9 @@ const T = {
     ne: 'Geboren op', ans: 'jaar', groupe: 'Bloedgroep', allergies: 'Allergieën', traitements: 'Medicatie',
     antecedents: 'Medische voorgeschiedenis', infos: 'Nuttige informatie', langues: 'Gesproken talen', nr: 'Niet ingevuld',
     medical: 'Medische informatie', contacts: 'Contactpersonen bij nood', appeler: 'Bellen', sms: 'Sms',
-    prevenir: '📍 Naasten verwittigen met mijn locatie', posEnCours: 'Locatie bepalen…',
-    posOk: 'Locatie bepaald: ze staat in de sms-berichten hierboven.', posKo: 'Locatie niet beschikbaar: sms zonder locatie.',
+    posEnCours: 'Locatie bepalen… de sms wordt geopend.',
+    posOk: 'Locatie toegevoegd aan de sms ✔', posKo: 'Locatie niet beschikbaar: sms zonder locatie.',
+    relance: 'Is de sms niet geopend? Tik opnieuw op „Sms”.',
     mails: n => n > 0 ? n + ' naaste(n) verwittigd per e-mail.' : '', deja: 'Er is enkele minuten geleden al een e-mailalarm verstuurd.',
     gestesT: 'Eerste hulp',
     gestes: ['Bel 112.',
@@ -240,8 +243,23 @@ function enteteUrgence(t) {
     '</div></header><a class="btn btn-112" href="tel:112">📞 ' + t.appel + '</a>';
 }
 
+// Ouverture d'un lien sms:/tel: (fonction isolée pour pouvoir la tester)
+function ouvrirLien(href) { window.location.href = href; }
+
+function localiser() {
+  return new Promise(res => {
+    if (!navigator.geolocation) return res(null);
+    navigator.geolocation.getCurrentPosition(p => res(p.coords), () => res(null),
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 120000 });
+  });
+}
+
 async function vueUrgence(id) {
-  const etat = { fiche: null, erreur: null, pos: '', msg: '' };
+  // pos : '' | 'encours' | 'ok' | 'ko' ; mail : résultat de l'alerte e-mail
+  const etat = { fiche: null, erreur: null, coords: null, geoFait: false, pos: '', mail: null, alerte: false, relance: false };
+  const lienPos = () => etat.coords
+    ? 'https://www.google.com/maps?q=' + etat.coords.latitude.toFixed(6) + ',' + etat.coords.longitude.toFixed(6) : '';
+
   const rendre = () => {
     const t = T[LANG];
     let h = enteteUrgence(t);
@@ -266,40 +284,52 @@ async function vueUrgence(id) {
         h += '<div class="contact"><div class="nom">' + esc(f['contact' + i + 'Nom']) +
           (f['contact' + i + 'Lien'] ? ' <span class="small">(' + esc(f['contact' + i + 'Lien']) + ')</span>' : '') + '</div>' +
           '<div>' + esc(tel) + '</div><div class="row">' +
-          '<a class="btn" href="tel:' + esc(telLien(tel)) + '">📞 ' + t.appeler + '</a>' +
-          '<a class="btn sec" href="' + esc(smsHref(tel, texteSms(f, etat.pos, id))) + '">💬 ' + t.sms + '</a></div></div>';
+          '<a class="btn" data-tel="' + i + '" href="tel:' + esc(telLien(tel)) + '">📞 ' + t.appeler + '</a>' +
+          '<a class="btn sec" data-sms="' + i + '" href="' + esc(smsHref(tel, texteSms(f, lienPos(), id))) + '">💬 ' + t.sms + '</a></div></div>';
       });
-      h += '<div class="row"><button class="btn rouge" id="btnPos">' + t.prevenir + '</button></div>' +
-        (etat.msg ? '<div class="msg info" id="posMsg">' + esc(etat.msg) + '</div>' : '') + '</section>';
+      const msgs = [];
+      if (etat.pos === 'encours') msgs.push(t.posEnCours);
+      if (etat.pos === 'ok') msgs.push(t.posOk);
+      if (etat.pos === 'ko') msgs.push(t.posKo);
+      if (etat.mail) msgs.push(etat.mail.deja ? t.deja : t.mails(etat.mail.n));
+      if (etat.relance) msgs.push(t.relance);
+      h += (msgs.filter(Boolean).length ? '<div class="msg info" id="posMsg">' + esc(msgs.filter(Boolean).join(' ')) + '</div>' : '') + '</section>';
       h += '<section class="card gestes"><h2>' + t.gestesT + '</h2><ol>' + t.gestes.map(g => '<li>' + esc(g) + '</li>').join('') + '</ol></section>';
       h += '<p class="small" style="text-align:center">' + esc(CONFIG.NOM_CLUB) + '</p>';
     }
     $app.innerHTML = h;
     $app.querySelectorAll('.langs button').forEach(b => b.onclick = () => { LANG = b.dataset.l; rendre(); });
-    const bp = document.getElementById('btnPos');
-    if (bp) bp.onclick = prevenir;
+    $app.querySelectorAll('a[data-sms]').forEach(a => a.onclick = ev => clicSms(ev, +a.dataset.sms));
+    $app.querySelectorAll('a[data-tel]').forEach(a => a.addEventListener('click', alerter));
   };
 
-  async function envoyerAlerte(coords) {
+  // Alerte e-mail aux proches : une seule fois par page (le serveur limite aussi à 1 / 5 min)
+  function alerter() {
+    if (etat.alerte) return;
+    etat.alerte = true;
     const body = { action: 'alerte', id };
-    if (coords) { body.lat = coords.latitude; body.lng = coords.longitude; body.precision = coords.accuracy; }
-    try {
-      const r = await apiPost(body);
-      return r.dejaEnvoyee ? T[LANG].deja : (r.ok ? T[LANG].mails(r.envoyes) : '');
-    } catch (e) { return ''; }
+    if (etat.coords) { body.lat = etat.coords.latitude; body.lng = etat.coords.longitude; body.precision = etat.coords.accuracy; }
+    apiPost(body).then(r => {
+      if (r && r.ok) { etat.mail = r.dejaEnvoyee ? { deja: true } : { n: r.envoyes }; rendre(); }
+    }).catch(() => {});
   }
-  function prevenir() {
-    const t = T[LANG];
-    etat.msg = t.posEnCours; rendre();
-    const fin = async (coords) => {
-      if (coords) etat.pos = 'https://www.google.com/maps?q=' + coords.latitude.toFixed(6) + ',' + coords.longitude.toFixed(6);
-      const m = await envoyerAlerte(coords);
-      etat.msg = (coords ? T[LANG].posOk : T[LANG].posKo) + (m ? ' ' + m : '');
+
+  async function clicSms(ev, i) {
+    ev.preventDefault();
+    const tel = etat.fiche['contact' + i + 'Tel'];
+    if (!etat.geoFait && etat.pos !== 'encours') {
+      etat.pos = 'encours'; rendre();
+      etat.coords = await localiser();
+      etat.geoFait = true;
+      etat.pos = etat.coords ? 'ok' : 'ko';
       rendre();
-    };
-    if (!navigator.geolocation) return fin(null);
-    navigator.geolocation.getCurrentPosition(p => fin(p.coords), () => fin(null),
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 });
+    } else if (etat.pos === 'encours') {
+      return; // localisation déjà en cours
+    }
+    alerter();
+    ouvrirLien(smsHref(tel, texteSms(etat.fiche, lienPos(), id)));
+    // Si le navigateur a bloqué l'ouverture (délai d'autorisation trop long), on invite à réappuyer
+    setTimeout(() => { if (document.visibilityState === 'visible' && !etat.relance) { etat.relance = true; rendre(); } }, 2000);
   }
 
   rendre();
@@ -308,6 +338,17 @@ async function vueUrgence(id) {
     if (r.ok) etat.fiche = r.fiche; else etat.erreur = r.erreur || 'introuvable';
   } catch (e) { etat.erreur = 'reseau'; }
   rendre();
+
+  // Si la localisation est déjà autorisée sur ce téléphone, on la récupère tout de suite (sans demande)
+  if (etat.fiche && navigator.permissions && navigator.geolocation) {
+    try {
+      const st = await navigator.permissions.query({ name: 'geolocation' });
+      if (st.state === 'granted' && !etat.geoFait) {
+        const c = await localiser();
+        if (c && !etat.geoFait) { etat.coords = c; etat.geoFait = true; etat.pos = 'ok'; rendre(); }
+      }
+    } catch (e) { /* API non disponible : la position sera demandée au clic sur SMS */ }
+  }
 }
 
 /* =================== VUE 2 : CRÉATION / MODIFICATION =================== */
