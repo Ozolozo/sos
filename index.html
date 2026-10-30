@@ -625,6 +625,157 @@ function vueRetrouver() {
   };
 }
 
+/* ============ PDF IMPRIMEUR (vectoriel, traits de coupe CutContour) ============ */
+// Géométrie en mm. Sticker casque : 31 x 42 mm, coins arrondis, fonds perdus 0,5 mm.
+const IMP = { PW: 210, PH: 297, SW: 31, SH: 42, R: 2, BLEED: 0.5, GAP: 2, COLS: 6, LABEL: 5, BLOC_GAP: 4, MT: 10, MB: 12, TRAIT_PT: 0.25 };
+// Chasses Helvetica / Helvetica-Bold (unités /1000) pour centrer les textes fixes
+const CHASSE = {
+  r: { ' ': 278, S: 667, a: 556, c: 500, d: 556, e: 556, f: 278, g: 556, i: 222, m: 833, n: 556, o: 556, r: 333, s: 500, t: 278, u: 556, y: 500, z: 500, '-': 333, '’': 222 },
+  b: { ' ': 278, C: 722, E: 667, G: 778, I: 278, N: 722, R: 722, U: 722, '·': 278, '+': 584, '.': 278, '0': 556, '1': 556, '2': 556, '3': 556, '4': 556, '5': 556, '6': 556, '7': 556, '8': 556, '9': 556 }
+};
+const largeurTexte = (txt, gras, taille) => [...txt].reduce((w, c) => w + ((gras ? CHASSE.b : CHASSE.r)[c] || 556), 0) * taille / 1000;
+const WINANSI = { '’': 0x92, '‘': 0x91, '–': 0x96, '—': 0x97, '“': 0x93, '”': 0x94, '€': 0x80, 'œ': 0x9c, 'Œ': 0x8c };
+function chainePdf(txt) {
+  let out = '';
+  for (const ch of String(txt)) {
+    let c = ch.codePointAt(0);
+    if (WINANSI[ch]) c = WINANSI[ch];
+    else if (!(c < 0x80 || (c >= 0xa0 && c <= 0xff))) {
+      const base = ch.normalize('NFD').replace(/[̀-ͯ]/g, '');
+      c = base.length === 1 && base.charCodeAt(0) < 0x80 ? base.charCodeAt(0) : 0x3f;
+    }
+    const s = String.fromCharCode(c);
+    out += (s === '(' || s === ')' || s === '\\') ? '\\' + s : s;
+  }
+  return '(' + out + ')';
+}
+const octets = str => Uint8Array.from(str, c => c.charCodeAt(0) & 0xff);
+async function compresser(u8) {
+  if (typeof CompressionStream === 'undefined') return null;
+  const flux = new Blob([u8]).stream().pipeThrough(new CompressionStream('deflate'));
+  return new Uint8Array(await new Response(flux).arrayBuffer());
+}
+const f2 = n => (Math.round(n * 1000) / 1000).toString();
+
+function planImprimeur(nb) {
+  const rows = Math.ceil(nb / IMP.COLS);
+  const blocH = IMP.LABEL + rows * IMP.SH + (rows - 1) * IMP.GAP;
+  const parPage = Math.max(1, Math.floor((IMP.PH - IMP.MT - IMP.MB + IMP.BLOC_GAP) / (blocH + IMP.BLOC_GAP)));
+  return { rows, blocH, parPage };
+}
+
+// Contenu d'un sticker (repère : coin bas-gauche du trait de coupe, unités pt)
+function contenuSticker(f, iceClair) {
+  const MM = 72 / 25.4, W = IMP.SW * MM, H = IMP.SH * MM, b = IMP.BLEED * MM;
+  let c = '';
+  // Bandeau rouge (déborde dans les fonds perdus en haut et sur les côtés)
+  const band = 6 * MM;
+  c += '0 0.95 0.9 0.05 k ' + f2(-b) + ' ' + f2(H - band) + ' ' + f2(W + 2 * b) + ' ' + f2(band + b) + ' re f\n';
+  const t1 = 'URGENCE · ICE', s1 = 7;
+  c += '0 0 0 0 k BT /F2 ' + s1 + ' Tf ' + f2((W - largeurTexte(t1, true, s1)) / 2) + ' ' + f2(H - band / 2 - s1 * 0.35) + ' Td ' + chainePdf(t1) + ' Tj ET\n';
+  // QR code (zone de silence de 2 modules incluse dans les 26 mm)
+  const q = makeQR(publicUrl(f.id)), n = q.getModuleCount(), taille = 26 * MM, cell = taille / (n + 4);
+  const x0 = (W - taille) / 2, yTop = H - 6.6 * MM;
+  c += '0 0 0 1 k\n';
+  for (let r = 0; r < n; r++) {
+    let col = 0;
+    while (col < n) {
+      if (!q.isDark(r, col)) { col++; continue; }
+      let fin = col; while (fin < n && q.isDark(r, fin)) fin++;
+      c += f2(x0 + (col + 2) * cell) + ' ' + f2(yTop - (r + 3) * cell) + ' ' + f2((fin - col) * cell) + ' ' + f2(cell) + ' re\n';
+      col = fin;
+    }
+  }
+  c += 'f\n';
+  const lignes = [['Scannez-moi en cas d’accident', false, 5.2, 35.4], ['Scan me in case of emergency', false, 5.2, 37.6]];
+  if (iceClair && f.contact1Tel) lignes.push(['ICE ' + f.contact1Tel, true, 6, 40.6]);
+  lignes.forEach(([t, gras, sz, yBase]) => {
+    c += 'BT /' + (gras ? 'F2' : 'F1') + ' ' + sz + ' Tf ' + f2((W - largeurTexte(t, gras, sz)) / 2) + ' ' + f2(H - yBase * MM) + ' Td ' + chainePdf(t) + ' Tj ET\n';
+  });
+  return c;
+}
+
+function traitCoupe(x, y) { // rectangle arrondi, x/y = coin bas-gauche en pt
+  const MM = 72 / 25.4, W = IMP.SW * MM, H = IMP.SH * MM, r = IMP.R * MM, k = 0.5523 * r;
+  return f2(x + r) + ' ' + f2(y) + ' m ' +
+    f2(x + W - r) + ' ' + f2(y) + ' l ' + f2(x + W - r + k) + ' ' + f2(y) + ' ' + f2(x + W) + ' ' + f2(y + r - k) + ' ' + f2(x + W) + ' ' + f2(y + r) + ' c ' +
+    f2(x + W) + ' ' + f2(y + H - r) + ' l ' + f2(x + W) + ' ' + f2(y + H - r + k) + ' ' + f2(x + W - r + k) + ' ' + f2(y + H) + ' ' + f2(x + W - r) + ' ' + f2(y + H) + ' c ' +
+    f2(x + r) + ' ' + f2(y + H) + ' l ' + f2(x + r - k) + ' ' + f2(y + H) + ' ' + f2(x) + ' ' + f2(y + H - r + k) + ' ' + f2(x) + ' ' + f2(y + H - r) + ' c ' +
+    f2(x) + ' ' + f2(y + r) + ' l ' + f2(x) + ' ' + f2(y + r - k) + ' ' + f2(x + r - k) + ' ' + f2(y) + ' ' + f2(x + r) + ' ' + f2(y) + ' c h S\n';
+}
+
+async function pdfImprimeur(fiches, nb, iceClair) {
+  const MM = 72 / 25.4, PWpt = IMP.PW * MM, PHpt = IMP.PH * MM, b = IMP.BLEED * MM;
+  const { rows, blocH, parPage } = planImprimeur(nb);
+  const ML = (IMP.PW - (IMP.COLS * IMP.SW + (IMP.COLS - 1) * IMP.GAP)) / 2;
+  const objets = []; // { dict, flux }
+  const ajouter = (dict, flux) => { objets.push({ dict, flux }); return objets.length; };
+  const remplacer = (id, dict, flux) => { objets[id - 1] = { dict, flux }; };
+  const idCatalogue = ajouter(''), idPages = ajouter('');
+  const idF1 = ajouter('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>');
+  const idF2 = ajouter('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>');
+  const idCS = ajouter('[/Separation /CutContour /DeviceCMYK << /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 0 0] /N 1 >>]');
+  const idGS = ajouter('<< /Type /ExtGState /OP true /op true /OPM 1 >>');
+  const flux = async (dictBase, texte) => {
+    const brut = octets(texte), z = await compresser(brut);
+    return z ? { dict: dictBase + ' /Filter /FlateDecode /Length ' + z.length, flux: z } : { dict: dictBase + ' /Length ' + brut.length, flux: brut };
+  };
+  // Un XObject par membre (réutilisé pour ses stickers)
+  const xo = [];
+  for (const f of fiches) {
+    const { dict, flux: fx } = await flux('/Type /XObject /Subtype /Form /BBox [' + f2(-b) + ' ' + f2(-b) + ' ' + f2(IMP.SW * MM + b) + ' ' + f2(IMP.SH * MM + b) + '] /Resources << /Font << /F1 ' + idF1 + ' 0 R /F2 ' + idF2 + ' 0 R >> >>', contenuSticker(f, iceClair));
+    xo.push(ajouter('<< ' + dict + ' >>', fx));
+  }
+  const nbPages = Math.ceil(fiches.length / parPage), kids = [];
+  for (let p = 0; p < nbPages; p++) {
+    let art = '', coupe = '';
+    const lot = fiches.slice(p * parPage, (p + 1) * parPage);
+    lot.forEach((f, i) => {
+      const yHaut = IMP.MT + i * (blocH + IMP.BLOC_GAP); // mm depuis le haut
+      const num = p * parPage + i + 1;
+      art += '0 0 0 0.6 k BT /F1 7 Tf ' + f2(ML * MM) + ' ' + f2(PHpt - (yHaut + 3.6) * MM) + ' Td ' +
+        chainePdf(num + '. ' + String(f.nom).toUpperCase() + ' ' + f.prenom) + ' Tj ET\n';
+      for (let k = 0; k < nb; k++) {
+        const r = Math.floor(k / IMP.COLS), col = k % IMP.COLS;
+        const x = (ML + col * (IMP.SW + IMP.GAP)) * MM;
+        const y = PHpt - (yHaut + IMP.LABEL + r * (IMP.SH + IMP.GAP) + IMP.SH) * MM;
+        art += 'q 1 0 0 1 ' + f2(x) + ' ' + f2(y) + ' cm /S' + (p * parPage + i) + ' Do Q\n';
+        coupe += traitCoupe(x, y);
+      }
+    });
+    art += '0 0 0 0.6 k BT /F1 6 Tf ' + f2(ML * MM) + ' ' + f2(6 * MM) + ' Td ' +
+      chainePdf(CONFIG.NOM_CLUB + ' – SOS QR – feuille ' + (p + 1) + '/' + nbPages + ' – ' + nb + ' stickers par membre – découpe : couleur CutContour') + ' Tj ET\n';
+    const contenu = art + 'q /GS1 gs /CS1 CS 1 SCN ' + IMP.TRAIT_PT + ' w\n' + coupe + 'Q\n';
+    const { dict, flux: fx } = await flux('', contenu);
+    const idC = ajouter('<< ' + dict.trim() + ' >>', fx);
+    const xos = lot.map((f, i) => '/S' + (p * parPage + i) + ' ' + xo[p * parPage + i] + ' 0 R').join(' ');
+    kids.push(ajouter('<< /Type /Page /Parent ' + idPages + ' 0 R /MediaBox [0 0 ' + f2(PWpt) + ' ' + f2(PHpt) + '] /Contents ' + idC + ' 0 R ' +
+      '/Resources << /Font << /F1 ' + idF1 + ' 0 R /F2 ' + idF2 + ' 0 R >> /XObject << ' + xos + ' >> /ColorSpace << /CS1 ' + idCS + ' 0 R >> /ExtGState << /GS1 ' + idGS + ' 0 R >> >> >>'));
+  }
+  remplacer(idCatalogue, '<< /Type /Catalog /Pages ' + idPages + ' 0 R >>');
+  remplacer(idPages, '<< /Type /Pages /Kids [' + kids.map(k => k + ' 0 R').join(' ') + '] /Count ' + kids.length + ' >>');
+  // Sérialisation
+  const morceaux = [octets('%PDF-1.4\n%âãÏÓ\n')];
+  let pos = morceaux[0].length; const offsets = [];
+  objets.forEach((o, i) => {
+    offsets.push(pos);
+    let tete = (i + 1) + ' 0 obj\n';
+    if (o.flux) {
+      const d = o.dict.startsWith('<<') ? o.dict.slice(0, -2).trimEnd() : '<< ' + o.dict;
+      tete += d.replace(/\s*>>\s*$/, '') + ' >>\nstream\n';
+      const a = octets(tete), z = octets('\nendstream\nendobj\n');
+      morceaux.push(a, o.flux, z); pos += a.length + o.flux.length + z.length;
+    } else {
+      const a = octets(tete + o.dict + '\nendobj\n'); morceaux.push(a); pos += a.length;
+    }
+  });
+  let xref = 'xref\n0 ' + (objets.length + 1) + '\n0000000000 65535 f \n';
+  offsets.forEach(o => { xref += String(o).padStart(10, '0') + ' 00000 n \n'; });
+  xref += 'trailer\n<< /Size ' + (objets.length + 1) + ' /Root ' + idCatalogue + ' 0 R >>\nstartxref\n' + pos + '\n%%EOF\n';
+  morceaux.push(octets(xref));
+  return { blob: new Blob(morceaux, { type: 'application/pdf' }), pages: nbPages, parPage };
+}
+
 /* ================ VUE 5 : ESPACE ADMIN (impression en lot) ================ */
 const NB_DEFAUT = { casque: 5, standard: 4, carte: 1 };
 async function vueAdmin() {
@@ -667,6 +818,13 @@ async function vueAdmin() {
       '<div class="row"><button class="btn" id="aimp">🖨️ Imprimer la sélection</button></div>' +
       '<p class="small">Astuce : dans la fenêtre d’impression, choisissez « Enregistrer au format PDF » pour envoyer le fichier à un imprimeur. ' +
       'Imprimez toujours à 100 % (taille réelle).</p></section>' +
+      '<section class="card"><h2>Fichier imprimeur (PDF avec traits de coupe)</h2>' +
+      '<p class="small">Stickers casque 31 × 42 mm, découpe vectorielle en couleur d’accompagnement « CutContour » (surimpression), ' +
+      'fonds perdus 0,5 mm. Le nom de chaque membre est imprimé au-dessus de sa rangée pour la distribution.</p>' +
+      '<label class="f">Stickers par membre <input type="number" id="pnb" min="1" max="36" value="6"></label>' +
+      '<p class="small" id="pinfo"></p>' +
+      '<label class="cb"><input type="checkbox" id="pice" checked> Afficher en clair le n° du contact 1</label>' +
+      '<div class="row"><button class="btn" id="ppdf">📄 Télécharger le PDF imprimeur</button></div><div id="pst"></div></section>' +
       '<section class="card"><div class="row" style="margin-top:0;justify-content:space-between">' +
       '<strong id="acompte"></strong><span><button class="btn petit sec" id="atout">Tout cocher</button> ' +
       '<button class="btn petit sec" id="arien">Tout décocher</button></span></div>' +
@@ -678,10 +836,31 @@ async function vueAdmin() {
       '</tbody></table></section>' +
       '<p class="small"><a href="#" id="aout">Se déconnecter</a></p>';
     const cases = () => [...$app.querySelectorAll('tbody input[type=checkbox]:not(:disabled)')];
+    const nbImp = () => Math.max(1, Math.min(36, parseInt(document.getElementById('pnb').value, 10) || 1));
     const compter = () => {
       const n = cases().filter(c => c.checked).length;
       document.getElementById('acompte').textContent = n + ' membre(s) sélectionné(s)';
       document.getElementById('aimp').disabled = n === 0;
+      document.getElementById('ppdf').disabled = n === 0;
+      const plan = planImprimeur(nbImp());
+      document.getElementById('pinfo').textContent = '→ ' + plan.parPage + ' membre(s) par feuille A4 (' + plan.parPage * nbImp() +
+        ' stickers) · ' + Math.ceil(n / plan.parPage) + ' feuille(s) pour ' + n + ' membre(s) sélectionné(s)';
+    };
+    document.getElementById('pnb').oninput = compter;
+    document.getElementById('ppdf').onclick = async () => {
+      const st = document.getElementById('pst'), bt = document.getElementById('ppdf');
+      const sel = cases().filter(c => c.checked).map(c => fiches[+c.dataset.i]);
+      bt.disabled = true; st.innerHTML = '<div class="msg info">Génération du PDF…</div>';
+      try {
+        const r = await pdfImprimeur(sel, nbImp(), document.getElementById('pice').checked);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(r.blob);
+        a.download = 'sos-qr-imprimeur-' + new Date().toISOString().slice(0, 10) + '.pdf';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        st.innerHTML = '<div class="msg ok">PDF généré ✔ ' + r.pages + ' feuille(s), ' + r.parPage + ' membre(s) par feuille.</div>';
+      } catch (e) { st.innerHTML = '<div class="msg ko">Erreur : ' + esc(e.message) + '</div>'; }
+      bt.disabled = false;
     };
     cases().forEach(c => c.onchange = compter);
     document.getElementById('atout').onclick = () => { cases().forEach(c => c.checked = true); compter(); };
