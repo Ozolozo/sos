@@ -550,7 +550,8 @@ function vueAccueil() {
     'toute personne sur place accède à vos informations vitales et peut prévenir vos proches, sans application.</p>' +
     (k ? '<a class="btn" href="?k=' + encodeURIComponent(k) + '">Modifier ma fiche</a><div style="height:8px"></div>' : '') +
     '<a class="btn ' + (k ? 'sec' : '') + '" href="?new">Créer ma fiche</a><div style="height:8px"></div>' +
-    (k ? '' : '<a class="btn sec" href="?retrouver">J’ai déjà une fiche</a>') + '</section>';
+    (k ? '' : '<a class="btn sec" href="?retrouver">J’ai déjà une fiche</a>') + '</section>' +
+    '<p style="text-align:center"><a class="btn petit sec" href="?admin">🔒 Portail administrateur</a></p>';
 }
 
 /* =============== VUE 4 : RETROUVER SON LIEN PERSONNEL =============== */
