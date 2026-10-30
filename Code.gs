@@ -9,7 +9,7 @@
  *        Qui a accès : Tout le monde
  */
 
-const VERSION = '2026-10-30-v3';
+const VERSION = '2026-10-30-v4';
 
 const CFG = {
   ONGLET_FICHES: 'Fiches',
@@ -70,7 +70,9 @@ function setup() {
   const props = PropertiesService.getScriptProperties();
   if (!props.getProperty('CODE_CLUB')) props.setProperty('CODE_CLUB', genererCle_(8));
   if (!props.getProperty('URL_SITE')) props.setProperty('URL_SITE', '');
+  if (!props.getProperty('CLE_ADMIN')) props.setProperty('CLE_ADMIN', genererCle_(16));
   Logger.log('CODE_CLUB = ' + props.getProperty('CODE_CLUB'));
+  Logger.log('CLE_ADMIN = ' + props.getProperty('CLE_ADMIN') + '  (espace admin : <URL du site>?admin)');
   Logger.log('Renseignez la propriété URL_SITE (ex. https://monclub.github.io/sos/)');
 }
 
@@ -97,6 +99,7 @@ function doPost(e) {
       case 'nouveauQR':   return json_(nouveauQR_(b.k));
       case 'alerte':      return json_(alerte_(b));
       case 'retrouver':   return json_(retrouver_(b.email));
+      case 'adminListe':  return json_(adminListe_(b.cle));
       default:            return json_({ ok: false, erreur: 'action' });
     }
   } catch (err) {
@@ -215,6 +218,26 @@ function alerte_(b) {
   });
   journal_('alerte', b.id, dest.length + ' e-mail(s)', lienPos);
   return { ok: true, envoyes: dest.length };
+}
+
+// Liste des fiches pour l'espace administrateur (impression en lot).
+// Ne renvoie jamais les clés d'édition ni les e-mails.
+function adminListe_(cle) {
+  const attendu = PropertiesService.getScriptProperties().getProperty('CLE_ADMIN');
+  if (!attendu || String(cle || '') !== attendu) {
+    journal_('adminRefuse', '', '', '');
+    return { ok: false, erreur: 'admin' };
+  }
+  const d = lireFiches_();
+  const champs = ['id', 'actif', 'prenom', 'nom', 'groupeSanguin', 'contact1Nom', 'contact1Tel', 'creeLe'];
+  const fiches = [];
+  for (let r = 1; r < d.values.length; r++) {
+    if (!d.values[r][d.idx.id]) continue;
+    const f = {};
+    champs.forEach(function (c) { f[c] = d.idx[c] === undefined ? '' : String(d.values[r][d.idx[c]]); });
+    fiches.push(f);
+  }
+  return { ok: true, fiches: fiches };
 }
 
 // Renvoie le(s) lien(s) personnel(s) à l'adresse enregistrée dans la fiche.

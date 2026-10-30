@@ -79,6 +79,12 @@
   .standard .ice{font-size:8pt;font-weight:700;padding-bottom:1.5mm}
   .stk svg{display:block;margin:1mm auto .5mm}
   .cartes{display:grid;gap:6mm;grid-template-columns:85.6mm}
+  .lot{break-inside:avoid;page-break-inside:avoid;margin-bottom:5mm}
+  .lot-nom{font:700 8pt Arial,Helvetica,sans-serif;color:#000;margin:0 0 1.5mm}
+  table.adm{width:100%;border-collapse:collapse;font-size:.92rem}
+  table.adm th,table.adm td{border-bottom:1px solid var(--bord);padding:7px 4px;text-align:left;vertical-align:middle}
+  table.adm tr.off td{color:var(--gris)}
+  input[type=number]{width:80px;padding:8px;border:1px solid #c7c7c7;border-radius:8px;font:inherit}
   .carte{width:85.6mm;height:54mm;border:.2mm dashed #bbb;border-radius:3mm;display:flex;overflow:hidden;font-family:Arial,Helvetica,sans-serif;background:#fff}
   .carte .g{width:44mm;display:flex;align-items:center;justify-content:center}
   .carte .d{flex:1;padding:3mm 3mm 3mm 0;display:flex;flex-direction:column;justify-content:center;font-size:7.5pt;line-height:1.3;color:#000}
@@ -361,6 +367,7 @@ function lireFormulaire(form) {
 const MSG_ERREUR = {
   codeClub: 'Code club incorrect.', cle: 'Lien personnel invalide.', champs: 'Champs manquants ou invalides.',
   serveur: 'Erreur du serveur.', reseau: 'Erreur réseau, réessayez.',
+  admin: 'Clé administrateur incorrecte.',
   inconnu: 'Aucune fiche n’est enregistrée avec cette adresse e-mail. Vérifiez l’orthographe ou créez votre fiche.',
   action: 'Fonction non disponible sur le serveur : la version déployée du script Apps Script n’est pas à jour.'
 };
@@ -482,26 +489,34 @@ async function vueEdition(k) {
 }
 
 /* ------------------------- Impressions ------------------------- */
+function htmlCarte(f, iceClair) {
+  return '<div class="carte"><div class="g">' + qrSvg(publicUrl(f.id), '40mm') + '</div><div class="d">' +
+    '<div class="t">FICHE D’URGENCE</div><div>Emergency info – scan me</div>' +
+    '<div class="n">' + esc(f.prenom) + ' ' + esc(String(f.nom).toUpperCase()) + '</div>' +
+    (f.groupeSanguin ? '<div>Groupe sanguin : <b>' + esc(f.groupeSanguin) + '</b></div>' : '') +
+    (iceClair && f.contact1Tel ? '<div>ICE : ' + esc(f.contact1Nom) + '<br><b>' + esc(f.contact1Tel) + '</b></div>' : '') +
+    '</div></div>';
+}
+function htmlSticker(f, type, iceClair) {
+  const mm = type === 'casque' ? 26 : 38;
+  return '<div class="stk"><div class="bd">URGENCE · ICE</div>' + qrSvg(publicUrl(f.id), mm + 'mm') +
+    '<div class="tx">Scannez-moi en cas d’accident<br>Scan me in case of emergency</div>' +
+    (iceClair && f.contact1Tel ? '<div class="tx ice">ICE ' + esc(f.contact1Tel) + '</div>' : '') + '</div>';
+}
 function imprimer(type, f, iceClair) {
-  const url = publicUrl(f.id);
-  const ice = iceClair && f.contact1Tel ? 'ICE ' + esc(f.contact1Tel) : '';
-  let h;
-  if (type === 'carte') {
-    const carte = '<div class="carte"><div class="g">' + qrSvg(url, '40mm') + '</div><div class="d">' +
-      '<div class="t">FICHE D’URGENCE</div><div>Emergency info – scan me</div>' +
-      '<div class="n">' + esc(f.prenom) + ' ' + esc(String(f.nom).toUpperCase()) + '</div>' +
-      (f.groupeSanguin ? '<div>Groupe sanguin : <b>' + esc(f.groupeSanguin) + '</b></div>' : '') +
-      (iceClair && f.contact1Tel ? '<div>ICE : ' + esc(f.contact1Nom) + '<br><b>' + esc(f.contact1Tel) + '</b></div>' : '') +
-      '</div></div>';
-    h = '<div class="cartes">' + carte + carte + '</div>';
-  } else {
-    const mm = type === 'casque' ? 26 : 38, nb = type === 'casque' ? 20 : 12;
-    const s = '<div class="stk"><div class="bd">URGENCE · ICE</div>' + qrSvg(url, mm + 'mm') +
-      '<div class="tx">Scannez-moi en cas d’accident<br>Scan me in case of emergency</div>' +
-      (ice ? '<div class="tx ice">' + ice + '</div>' : '') + '</div>';
-    h = '<div class="planche ' + type + '">' + s.repeat(nb) + '</div>';
-  }
-  $print.innerHTML = h;
+  $print.innerHTML = type === 'carte'
+    ? '<div class="cartes">' + htmlCarte(f, iceClair).repeat(2) + '</div>'
+    : '<div class="planche ' + type + '">' + htmlSticker(f, type, iceClair).repeat(type === 'casque' ? 20 : 12) + '</div>';
+  setTimeout(() => window.print(), 50);
+}
+// Impression en lot : un bloc par membre, avec son nom au-dessus pour le tri.
+function imprimerLot(type, fiches, nb, iceClair) {
+  $print.innerHTML = fiches.map(f =>
+    '<div class="lot"><div class="lot-nom">' + esc(f.prenom) + ' ' + esc(String(f.nom).toUpperCase()) + '</div>' +
+    (type === 'carte'
+      ? '<div class="cartes">' + htmlCarte(f, iceClair).repeat(nb) + '</div>'
+      : '<div class="planche ' + type + '">' + htmlSticker(f, type, iceClair).repeat(nb) + '</div>') +
+    '</div>').join('');
   setTimeout(() => window.print(), 50);
 }
 
@@ -568,6 +583,83 @@ function vueRetrouver() {
   };
 }
 
+/* ================ VUE 5 : ESPACE ADMIN (impression en lot) ================ */
+const NB_DEFAUT = { casque: 5, standard: 4, carte: 1 };
+async function vueAdmin() {
+  let cle = '';
+  try { cle = sessionStorage.getItem('sos_admin') || ''; } catch (e) {}
+  const formCle = (msg) => {
+    $app.innerHTML = '<h1>Espace administrateur</h1>' + (msg || '') +
+      '<section class="card"><form id="fa" novalidate><label class="f">Clé administrateur <span class="req">*</span>' +
+      '<input type="text" name="cle" required autocomplete="off"></label>' +
+      '<button class="btn" type="submit" style="margin-top:12px">Accéder</button></form></section>';
+    document.getElementById('fa').onsubmit = ev => {
+      ev.preventDefault();
+      cle = ev.target.elements.cle.value.trim();
+      if (cle) charger();
+    };
+  };
+  async function charger() {
+    $app.innerHTML = '<p class="small">Chargement…</p>';
+    let r;
+    try { r = await apiPost({ action: 'adminListe', cle }); }
+    catch (e) { return formCle('<div class="msg ko">' + MSG_ERREUR.reseau + '</div>'); }
+    if (!r.ok) {
+      try { sessionStorage.removeItem('sos_admin'); } catch (e) {}
+      return formCle('<div class="msg ko">' + esc(MSG_ERREUR[r.erreur] || r.erreur) + '</div>');
+    }
+    try { sessionStorage.setItem('sos_admin', cle); } catch (e) {}
+    rendre(r.fiches);
+  }
+  function rendre(fiches) {
+    fiches.sort((a, b) => (a.nom + a.prenom).localeCompare(b.nom + b.prenom, 'fr'));
+    const actives = fiches.filter(f => f.actif === 'OUI').length;
+    $app.innerHTML = '<h1>Espace administrateur</h1>' +
+      '<p class="small">' + fiches.length + ' fiche(s), dont ' + actives + ' active(s). Les fiches désactivées ne peuvent pas être imprimées.</p>' +
+      '<section class="card"><h2>Impression en lot</h2>' +
+      '<label class="f">Format<select id="afmt">' +
+      '<option value="casque">Stickers casque 26 mm</option><option value="standard">Stickers 38 mm</option>' +
+      '<option value="carte">Carte portefeuille</option></select></label>' +
+      '<label class="f">Nombre par membre <input type="number" id="anb" min="1" max="40" value="' + NB_DEFAUT.casque + '"></label>' +
+      '<label class="cb"><input type="checkbox" id="aice" checked> Afficher en clair le n° du contact 1</label>' +
+      '<div class="row"><button class="btn" id="aimp">🖨️ Imprimer la sélection</button></div>' +
+      '<p class="small">Astuce : dans la fenêtre d’impression, choisissez « Enregistrer au format PDF » pour envoyer le fichier à un imprimeur. ' +
+      'Imprimez toujours à 100 % (taille réelle).</p></section>' +
+      '<section class="card"><div class="row" style="margin-top:0;justify-content:space-between">' +
+      '<strong id="acompte"></strong><span><button class="btn petit sec" id="atout">Tout cocher</button> ' +
+      '<button class="btn petit sec" id="arien">Tout décocher</button></span></div>' +
+      '<table class="adm"><thead><tr><th></th><th>Nom</th><th>Inscrit le</th><th>Fiche</th></tr></thead><tbody>' +
+      fiches.map((f, i) => '<tr class="' + (f.actif === 'OUI' ? '' : 'off') + '"><td><input type="checkbox" data-i="' + i + '"' +
+        (f.actif === 'OUI' ? ' checked' : ' disabled') + '></td><td>' + esc(String(f.nom).toUpperCase()) + ' ' + esc(f.prenom) +
+        (f.actif === 'OUI' ? '' : ' <span class="small">(désactivée)</span>') + '</td><td class="small">' + esc(String(f.creeLe).slice(0, 10)) +
+        '</td><td><a href="' + esc(publicUrl(f.id)) + '" target="_blank" rel="noopener">voir</a></td></tr>').join('') +
+      '</tbody></table></section>' +
+      '<p class="small"><a href="#" id="aout">Se déconnecter</a></p>';
+    const cases = () => [...$app.querySelectorAll('tbody input[type=checkbox]:not(:disabled)')];
+    const compter = () => {
+      const n = cases().filter(c => c.checked).length;
+      document.getElementById('acompte').textContent = n + ' membre(s) sélectionné(s)';
+      document.getElementById('aimp').disabled = n === 0;
+    };
+    cases().forEach(c => c.onchange = compter);
+    document.getElementById('atout').onclick = () => { cases().forEach(c => c.checked = true); compter(); };
+    document.getElementById('arien').onclick = () => { cases().forEach(c => c.checked = false); compter(); };
+    document.getElementById('afmt').onchange = e => { document.getElementById('anb').value = NB_DEFAUT[e.target.value]; };
+    document.getElementById('aimp').onclick = () => {
+      const sel = cases().filter(c => c.checked).map(c => fiches[+c.dataset.i]);
+      const nb = Math.max(1, Math.min(40, parseInt(document.getElementById('anb').value, 10) || 1));
+      imprimerLot(document.getElementById('afmt').value, sel, nb, document.getElementById('aice').checked);
+    };
+    document.getElementById('aout').onclick = ev => {
+      ev.preventDefault();
+      try { sessionStorage.removeItem('sos_admin'); } catch (e) {}
+      cle = ''; formCle();
+    };
+    compter();
+  }
+  if (cle) charger(); else formCle();
+}
+
 /* ============================ ROUTEUR ============================ */
 (function () {
   if (!apiConfiguree()) {
@@ -579,6 +671,7 @@ function vueRetrouver() {
   if (params.get('k')) return vueEdition(params.get('k'));
   if (params.has('new')) return vueCreation();
   if (params.has('retrouver')) return vueRetrouver();
+  if (params.has('admin')) return vueAdmin();
   vueAccueil();
 })();
 </script>
